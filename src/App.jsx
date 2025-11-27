@@ -21,7 +21,8 @@ import {
   setDoc, 
   updateDoc,
   deleteDoc,
-  serverTimestamp
+  serverTimestamp,
+  getDocs 
 } from 'firebase/firestore';
 import { 
   BookOpen, 
@@ -44,7 +45,8 @@ import {
   Hash,
   CreditCard,
   Filter,
-  Zap
+  Zap,
+  BarChart3 
 } from 'lucide-react';
 
 // ------------------------------------------------------------------
@@ -209,7 +211,7 @@ const AuthScreen = () => {
         <div className="flex justify-center mb-6">
           <div className="bg-blue-600 p-3 rounded-full"><School className="text-white w-8 h-8" /></div>
         </div>
-        <h1 className="text-2xl font-bold text-center text-gray-800 mb-2">UniAttend</h1>
+        <h1 className="text-2xl font-bold text-center text-gray-800 mb-2">SOE ATTEND</h1>
         <p className="text-center text-gray-500 mb-6">{isLogin ? 'Sign In' : 'Create Account'}</p>
         
         {error && <div className="bg-red-50 text-red-600 p-3 rounded text-sm mb-4 flex gap-2"><AlertCircle size={16}/>{error}</div>}
@@ -227,7 +229,6 @@ const AuthScreen = () => {
           )}
           <input type="email" placeholder={`Email`} required className="w-full border p-2 rounded" value={email} onChange={e => setEmail(e.target.value)} />
           <input type="password" placeholder="Password" required className="w-full border p-2 rounded" value={password} onChange={e => setPassword(e.target.value)} />
-          
           <button disabled={loading} className="w-full bg-blue-600 text-white p-3 rounded font-bold hover:bg-blue-700 transition">
             {loading ? <Loader2 className="animate-spin mx-auto"/> : (isLogin ? 'Login' : 'Sign Up')}
           </button>
@@ -394,7 +395,7 @@ const TeacherDashboard = ({ user, userProfile }) => {
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
       <div className="flex justify-between items-center mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Teacher Dashboard</h1>
+          <h1 className="text-2xl font-bold text-gray-800">{userProfile.name}'s Dashboard</h1>
           <p className="text-sm text-gray-500">{userProfile.department}</p>
         </div>
         <button onClick={() => setIsCreating(true)} className="bg-blue-600 text-white px-4 py-2 rounded flex items-center gap-2 hover:bg-blue-700 transition">
@@ -482,6 +483,7 @@ const SubjectManager = ({ subject, onBack }) => {
   const [students, setStudents] = useState([]);
   const [loadingStudents, setLoadingStudents] = useState(true);
   const [quickAbsentInput, setQuickAbsentInput] = useState('');
+  const [loadingReport, setLoadingReport] = useState(false);
 
   // 1. Fetch Students
   useEffect(() => {
@@ -535,18 +537,15 @@ const SubjectManager = ({ subject, onBack }) => {
   const applyQuickAbsent = () => {
     if (!quickAbsentInput.trim()) return;
     
-    // Split input by comma, trim whitespace
     const absenteesRolls = quickAbsentInput.split(',').map(s => s.trim());
     const newAttendance = { ...attendance };
     let markedCount = 0;
 
     students.forEach(s => {
-      // Check if student's roll number is in the list provided by teacher
       if (absenteesRolls.includes(String(s.rollNo))) {
         newAttendance[s.uid] = 'Absent';
         markedCount++;
       } else {
-        // If not in the list, ensure they are marked present (resetting previous mistakes)
         newAttendance[s.uid] = 'Present';
       }
     });
@@ -568,9 +567,57 @@ const SubjectManager = ({ subject, onBack }) => {
     alert('Attendance Saved Successfully!');
   };
 
-  const report = () => {
-    const data = students.map(s => [s.rollNo || '-', s.name, s.email, attendance[s.uid] || 'Present']);
-    generatePDF(`Report: ${subject.name} (${date} ${startTime}-${endTime})`, ['Roll No', 'Name', 'Email', 'Status'], data, 'Class_Report');
+  const downloadFullReport = async () => {
+    setLoadingReport(true);
+    try {
+      // 1. Fetch all attendance records for this subject
+      const q = query(
+        collection(db, ATTENDANCE_COLLECTION),
+        where('subjectId', '==', subject.id)
+      );
+      const snap = await getDocs(q);
+      const allRecords = snap.docs.map(d => d.data());
+      const totalClasses = allRecords.length;
+
+      // 2. Calculate stats for each student
+      const reportData = students.map(s => {
+        let present = 0;
+        let absent = 0;
+        
+        allRecords.forEach(record => {
+          if (record.records[s.uid] === 'Present') present++;
+          else if (record.records[s.uid] === 'Absent') absent++;
+        });
+
+        // Use totalClasses as denominator (assuming student enrolled from start)
+        // Or present + absent if they missed some due to late enrollment (simplified here)
+        const total = present + absent; // Using actual marked records
+        const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
+
+        return [
+          s.rollNo || '-',
+          s.name,
+          totalClasses, // Total classes held by teacher
+          present,
+          absent,
+          `${percentage}%`
+        ];
+      });
+
+      // 3. Generate PDF
+      await generatePDF(
+        `Consolidated Attendance Report: ${subject.name}`,
+        ['Roll No', 'Name', 'Total Classes', 'Present', 'Absent', 'Percentage'],
+        reportData,
+        `Full_Report_${subject.code}`
+      );
+
+    } catch (err) {
+      console.error(err);
+      alert("Error generating full report");
+    } finally {
+      setLoadingReport(false);
+    }
   };
 
   return (
@@ -604,13 +651,13 @@ const SubjectManager = ({ subject, onBack }) => {
             <button onClick={save} className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2 shadow-sm font-medium transition-transform active:scale-95">
               <CheckCircle size={18}/> Save
             </button>
-            <button onClick={report} className="text-blue-600 bg-white border border-blue-200 px-4 py-2 rounded-lg hover:bg-blue-50 flex items-center gap-2 font-medium">
-              <FileText size={18}/> PDF
+            <button onClick={downloadFullReport} className="text-blue-600 bg-white border border-blue-200 px-4 py-2 rounded-lg hover:bg-blue-50 flex items-center gap-2 font-medium">
+              {loadingReport ? <Loader2 className="animate-spin" size={18}/> : <BarChart3 size={18}/>} Full History
             </button>
           </div>
         </div>
 
-        {/* Quick Absent Form - Updated UI */}
+        {/* Quick Absent Form */}
         <div className="mb-6 bg-red-50 p-4 rounded-xl border border-red-100 shadow-sm">
           <div className="flex flex-col md:flex-row gap-3 items-center">
             <div className="flex items-center gap-2 text-red-700 font-bold text-sm whitespace-nowrap">
@@ -679,6 +726,7 @@ const SubjectManager = ({ subject, onBack }) => {
 const StudentDashboard = ({ user, userProfile }) => {
   const [subjects, setSubjects] = useState([]);
   const [selectedSubject, setSelectedSubject] = useState(null);
+  const [loadingReport, setLoadingReport] = useState(false);
 
   useEffect(() => {
     if (!userProfile.department || !userProfile.semester) return;
@@ -693,6 +741,54 @@ const StudentDashboard = ({ user, userProfile }) => {
     return () => unsub();
   }, [userProfile]);
 
+  const downloadConsolidated = async () => {
+    setLoadingReport(true);
+    try {
+      const reportData = [];
+
+      for (const sub of subjects) {
+        const q = query(
+          collection(db, ATTENDANCE_COLLECTION),
+          where('subjectId', '==', sub.id)
+        );
+        const snap = await getDocs(q);
+        let total = 0;
+        let present = 0;
+        
+        snap.docs.forEach(doc => {
+           const record = doc.data();
+           // Check if student has a record for this date
+           if (record.records && record.records[user.uid]) {
+             total++; 
+             if (record.records[user.uid] === 'Present') present++;
+           }
+        });
+        
+        const pct = total > 0 ? Math.round((present / total) * 100) : 0;
+        reportData.push([
+          sub.name,
+          sub.code,
+          total,
+          present,
+          `${pct}%`
+        ]);
+      }
+
+      await generatePDF(
+        `Consolidated Attendance: ${userProfile.name} (${userProfile.semester})`,
+        ['Subject', 'Code', 'Total Classes', 'Attended', 'Percentage'],
+        reportData,
+        `Consolidated_Attendance_${userProfile.rollNo}`
+      );
+
+    } catch (e) {
+      console.error(e);
+      alert("Error generating report. Please try again.");
+    } finally {
+      setLoadingReport(false);
+    }
+  };
+
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
@@ -700,6 +796,14 @@ const StudentDashboard = ({ user, userProfile }) => {
            <h1 className="text-2xl font-bold text-gray-800">My Dashboard</h1>
            <p className="text-sm text-gray-500">{userProfile.department} • {userProfile.semester}</p>
          </div>
+         <button 
+            onClick={downloadConsolidated} 
+            disabled={loadingReport || subjects.length === 0}
+            className="flex items-center gap-2 bg-white border border-blue-200 text-blue-600 px-4 py-2 rounded-lg hover:bg-blue-50 font-medium transition-colors shadow-sm"
+         >
+            {loadingReport ? <Loader2 className="animate-spin" size={18}/> : <FileText size={18}/>} 
+            Consolidated Report
+         </button>
       </div>
       
       {selectedSubject ? (
@@ -867,7 +971,7 @@ export default function App() {
     <div className="min-h-screen bg-gray-50 font-sans text-gray-900">
       <nav className="bg-white shadow border-b h-16 flex items-center justify-between px-6 sticky top-0 z-50">
          <div className="flex items-center gap-2 font-bold text-xl text-blue-600">
-            <School /> UniAttend
+            <School /> SOE ATTEND
          </div>
          <div className="flex items-center gap-4">
             <div className="text-right hidden md:block">
